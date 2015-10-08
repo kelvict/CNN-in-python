@@ -56,6 +56,8 @@ class conv_layer(layer):
             fanin=connected*kernel_height*kernel_width
             sd=1.0/np.sqrt(fanin)
             weights[i]=-1.0*sd+2*sd*np.random.random_sample((kernel_height,kernel_width))
+        print("weight")
+        print(weights.shape)
         return weights
 
 
@@ -87,6 +89,7 @@ class conv_layer(layer):
         self.conv_w = self.init_weight(connect,shape_kernel)
         self.conv_b = np.zeros(num_out_maps)
         self.sub_w = np.ones(shape_pooling) / pool_height / pool_width
+        # becuase the numpy's + is elementary wise
         self.sub_b = np.zeros(num_out_maps)
 
         conv_out_height = image_height - kernel_height + 1
@@ -114,7 +117,7 @@ class conv_layer(layer):
         for index in range(0,shape_kernel[0]):
             this_image = in_image[connect[0,index]]
             this_kernel = kernel[index]
-            # NOTE should this to be rot180
+            # FIXME should this to be rot180
             this_out = signal.convolve2d(this_image,this_kernel,mode = 'valid')
             out_feature_index = connect[1,index]
             out_feature[out_feature_index] += this_conv
@@ -167,25 +170,30 @@ class conv_layer(layer):
         self.sub_out = pooling(conv_out,sub_w,sub_b,shape_pooling,stride)
         return self.sub_out
 
-    def bp(self,d_prev):
-        self.d_conv_out = np.kron(self.conv_w,d_prev) * self.conv_out * (1 - self.conv_out)
-        connect = self.connect
-        self.d_prev = np.zeros((self.shape_image)
-            #  for index in range(0,shape_kernel[0]):
-            #  this_image = in_image[connect[0,index]]
+#      def bp(self,d_last):
+        #  # TODO must use index
+        #  kernel = self.conv_w
+        #  self.d_conv_out = np.zeros(self.shape_image)
+        #  for index in range(0,d_last.shape[0]):
+            #  self.d_conv_out = np.kron(self.conv_w,d_last[index]) * self.conv_out * (1 - self.conv_out)
+
+        #  connect = self.connect
+        #  self.d_prev = np.zeros((self.shape_image))
+        #  shape_kernel = self.shape_kernel
+        #  kernel = self.conv_w
+
+        #  for index in range(0,shape_kernel[0]):
+            #  prev_index = connect[0,index]
             #  this_kernel = kernel[index]
-            #  NOTE should this to be rot180
-            #  this_out = signal.convolve2d(this_image,this_kernel,mode = 'valid')
-            #  out_feature_index = connect[1,index]
-            #  out_feature[out_feature_index] += this_conv
-        #  return sigmoid(out_feature)
+            #  #  NOTE should this to be rot180
+            #  this_out = signal.convolve2d(this_image,np.rot(this_kernel,2),mode = 'full')
+            #  #  out_feature_index = connect[1,index]
+            #  #  out_feature[out_feature_index] += this_conv
+        #  #  return sigmoid(out_feature)
 
 
 
-
-
-
-class out_layer(layer):
+class out_layer:
     def __init__(self,n_input,n_output):
         #  layer.__init__("out")
 
@@ -252,24 +260,52 @@ class cnn:
         return self.out
 
     def apply_gradient(self):
+        pass
 
 
     def train(self,data,target):
         out = ff(data)
         if out[1] != target:
             self.error_count += 1
+
+        # compute the delta of the out layer
         self.error = self.layers[2].out
         self.error[target] -= 1
         self.error_fun = 0
         for x in self.error:
             self.error_fun += x ** 2
-        self.layers[2].d_out = self.error * self.out * (1 - self.out)
-        self.layers[2].d_prev = np.dot(self.layers[2].w,self.layers[2].d_out)
+        self.d_out = self.error * self.out * (1 - self.out)
+
+        # compute the delta of the second layer
+        self.layers[1].d_sub = np.dot(self.layers[2].w,self.d_out)
         # because it has reshape the output of the sub layer,we must reshape it back
-        self.layers[2].d_prev = self.layers[2].d_prev.reshape([self.num_out_maps2,self.layers[2].shape_sub_out])
-        d_prev = self.layers[1].bp(self.layers[2].d_prev)
-        d_prev = self.layers[0].bp(d_prev)
+        self.layers[1].d_sub = self.layers[1].d_sub.reshape([self.num_out_maps2,self.layers[2].shape_sub_out])
+        num_input_images = self.layers[1].shape_image[0]
+        d_conv1 = np.array(self.layers[1].shape_image)
+        conv_out1 = self.layers[1].conv_out
+        weight1 = self.layers[1].sub_w
+        for i in range(0,num_input_images):
+            d_conv1[i] = np.kron(weight1,self.layers[1].d_sub[i]) * conv_out[i] * (1 - conv_out[i])
+        self.layers[1].d_conv = d_conv1
+
+        # TODO compute the delta of the first layer
+        weights = self.layers[1].conv_w
+        d_last = d_conv1
+        # FIXME shape_conv_out is 2D
+        self.layers[0].d_sub = np.zeros(self.layers[0].shape_conv_out)
+
         apply_gradient()
+
+    def check(self):
+        for index in range(0,2):
+            print(self.layers[index].conv_w)
+            print(self.layers[index].conv_b)
+            print(self.layers[index].sub_w)
+            print(self.layers[index].sub_b)
+            print()
+        print(self.layers[2].w)
+        print(self.layers[2].b)
+        print()
 
 
 
@@ -278,6 +314,7 @@ if __name__ == '__main__':
     conv_net = cnn([28,28],10)
     train_count =  train_set[0].shape[0]
 
+    conv_net.check()
     #  for epoch in range(0,10):
         #  conv_net.error_count = 0
         #  print("the %dth train" % epoch)
