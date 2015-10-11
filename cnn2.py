@@ -6,6 +6,7 @@ import scipy.signal as signal
 import scipy
 import gzip
 import cPickle
+import copy
 
 def load_data(path):
     f=gzip.open(path,'rb')
@@ -130,6 +131,7 @@ class conv_layer(layer):
             out_feature_index = connect[1,index]
             out_feature[out_feature_index] += this_out
 
+        self.conv_z = copy.deepcopy(out_feature)
         out_feature = self.sigmoid(out_feature)
         #  print(out_feature)
         return out_feature
@@ -152,7 +154,8 @@ class conv_layer(layer):
                 for x in range(0,shape_image[1],stride):
                     y_result.append(y_data[x])
                 out_image.append(y_result)
-            return np.array(y_result)
+
+            return np.array(out_image)
 
         shape_image = np.shape(in_image)
         shape_out_feature = (in_image.shape[0],(shape_image[1] - shape_pooling[0]) / stride + 1,
@@ -163,13 +166,16 @@ class conv_layer(layer):
         kernel = np.ones(shape_pooling)
         for index in range(0,shape_out_feature[0]):
             this_image = in_image[index]
-            this_kernel = kernel * weight[index]
-            this_out = signal.convolve2d(this_image,this_kernel,mode = 'valid')
+            this_kernel = kernel * weight
+            # this should be rot180 because this is a relative operation
+            this_out = signal.convolve2d(this_image,np.rot90(this_kernel,2),mode = 'valid')
             out_feature[index] = copy_out(this_out,stride)
             out_feature[index] += bias[index][0]
-            # FIXME use sigmoid?
-            out_feature = self.sigmoid(out_feature)
-            return out_feature
+
+        self.sub_z = copy.deepcopy(out_feature)
+        # FIXME use sigmoid?
+        #  out_feature = self.sigmoid(out_feature)
+        return out_feature
 
     def ff_conv(self,in_images):
         connect = self.connect
@@ -238,22 +244,22 @@ class out_layer(layer):
         w is 10 * 256
         """
         inputs = in_images.reshape([self.n_input,1])
+        #  print(inputs[0][0])
         w = self.w
         b = self.b
         self.out = np.dot(w,inputs)
         self.out += b
+
+        #FIXME for debug
+        self.z = self.out
         self.out = self.sigmoid(self.out)
         return self.out
 
     def gradient(self,inputs):
+        # FIXME to delete
         self.dw = np.zeros([self.n_output,self.n_input])
         # when the array has just one dimension it has no transpose,must to be (1,x)
-        self.dw = np.dot(self.d_out.reshape([self.n_output,1]),inputs.reshape([1,self.n_input]))
-        # FIXME to delete
-        #  print("dw.shape")
-        #  print(self.dw.shape)
-        #  self.dw = np.dot(inputs.reshape([self.n_input,1]),self.d_out.reshape([1,self.n_output]))
-        # FIXME is it right
+        self.dw = np.dot(self.d_out,inputs.reshape([1,self.n_input]))
         self.db = self.d_out
 
     def apply_gradient(self,alpha):
@@ -311,8 +317,7 @@ class cnn:
         return self.out
 
     def compute_gradient(self):
-        shape_out_layer_input = self.layers[2].n_input
-        self.layers[2].gradient(self.layers[1].sub_out.reshape(shape_out_layer_input))
+        self.layers[2].gradient(self.layers[1].sub_out)
         self.layers[1].gradient(self.layers[0].sub_out)
         self.layers[0].gradient(self.input)
 
@@ -322,6 +327,7 @@ class cnn:
 
 
     def train(self,data,target):
+        self.target = target
         out = self.ff(data)
         if out[1] != target:
             self.error_count += 1
@@ -334,6 +340,18 @@ class cnn:
 
     def check_gradient(self,image,target):
         delta = 0.000001
+        self.target = target
+
+        #FIXME for debug
+        out = self.ff(image)
+        if out[1] != target:
+            self.error_count += 1
+
+        self.compute_error()
+
+        self.bp()
+
+
 
         #  print("check layer 2")
         #  print("change w")
@@ -381,11 +399,11 @@ class cnn:
             #  print(" ")
 
         # check_gradient layer0 layer[1]
-        for i in range(0,2):
-            print("check layer %d" % (1 - i))
+        #  for i in range(0,2):
+            #  print("check layer %d" % (1 - i))
             #  self.check_gradient_w(1 - i,delta)
             #  self.check_gradient_b(1 - i,delta)
-            self.check_gradient_s(1 - i,delta)
+            #  self.check_gradient_s(1 - i,delta)
 
 
     def check_gradient_w(self,layer,delta):
@@ -466,16 +484,45 @@ class cnn:
                 print("real result is %f" % derive)
                 print(" ")
 
+    def check(self):
+        image = np.ones([1,28,28])
+        out = self.ff(image)
+        for i in range(0,2):
+            print(self.layers[i].conv_out[0])
+            print(self.layers[i].conv_out[1])
+            print(self.layers[i].sub_out[0])
+            print(self.layers[i].sub_out[1])
 
 
     def compute_error(self):
         # compute the error of the net
+        target = self.target
         self.error = self.layers[2].out
         self.error[target][0] -= 1
         self.error_fun = 0
         for x in self.error:
             self.error_fun += x ** 2
         self.error_fun /= 2
+
+        #FIXME for debug
+        #  error_fun0 = self.error_fun
+        #  self.layers[2].d_out = self.error * self.layers[2].out * (1 - self.layers[2].out)
+        #  print("bp %f" % self.layers[2].d_out[0][0])
+        #  delta = 0.0000001
+        #  self.layers[2].z[0][0] += delta
+        #  self.layers[2].out = self.layers[2].sigmoid(self.layers[2].z)
+
+        #  self.error = self.layers[2].out
+        #  self.error[target][0] -= 1
+        #  self.error_fun = 0
+        #  for x in self.error:
+            #  self.error_fun += x ** 2
+        #  self.error_fun /= 2
+        #  error_fun1 = self.error_fun
+        #  derive = (error_fun1 - error_fun0) / delta
+        #  print("real %f" % derive)
+
+
 
 
     def bp(self):
@@ -487,7 +534,37 @@ class cnn:
         # compute the d_sub
         #  print(self.layers[2].d_out.shape)
         self.layers[1].d_sub = np.dot(self.layers[2].w.transpose(),self.layers[2].d_out)
-        # because it has reshape the output of the sub layer,we must reshape it back
+
+        # FIXME for debug
+        # --------------------------------------------------------------
+        delta = 0.000001
+
+        z0 = copy.deepcopy(self.layers[2].z)
+        i,j = (0,0)
+        error_fun0 = self.error_fun
+        print("bp's result is %f" % self.layers[1].d_sub[i][j])
+
+        derive_t = 0
+        for i in range(0,10):
+            derive_t += self.layers[2].d_out[i][0] * self.layers[2].w[i,0]
+            print(self.layers[2].w[i,0])
+        print("")
+        print(derive_t)
+
+        self.layers[1].sub_z[0][0][0] += delta
+        self.layers[2].ff(self.layers[1].sub_z)
+        z1 = copy.deepcopy(self.layers[2].z)
+        #  print(self.layers[2].out)
+        self.compute_error()
+        error_fun1 = self.error_fun
+
+        delta_fun = error_fun1 - error_fun0
+        derive = delta_fun / delta
+        derive_z = (z1 - z0) / delta
+        print("real result is %f" % derive)
+        print(derive_z)
+
+        #  because it has reshape the output of the sub layer,we must reshape it back
         shape_in = [self.num_out_maps2,self.layers[1].shape_sub_out[1],self.layers[1].shape_sub_out[2]]
         self.layers[1].d_sub = self.layers[1].d_sub.reshape(shape_in)
         # compute the d_conv
@@ -527,25 +604,22 @@ class cnn:
 
     def init_check(self):
         for index in range(0,2):
-            print(self.layers[index].conv_w.shape)
-            print(self.layers[index].conv_b)
+            print(self.layers[index].conv_w[0])
+            print(self.layers[index].conv_w[1])
+            print(self.layers[index].conv_b.shape)
             print(self.layers[index].shape_conv_out)
-            print(self.layers[index].sub_w.shape)
-            print(self.layers[index].sub_b)
+            print(self.layers[index].sub_w[0])
+            print(self.layers[index].sub_w[1])
+            print(self.layers[index].sub_b.shape)
             print(self.layers[index].shape_sub_out)
             #  print("connect")
             #  print(self.layers[index].connect)
-        print(self.layers[2].w.shape)
+        print(self.layers[2].w[0].shape)
         print(self.layers[2].b)
         #  print()
 
-    def check(self):
-        for index in range(0,3):
-            print("layer[%d]" % index)
-            print(self.layers[index].dw.shape)
-            print(self.layers[index].db)
-
     def test(self,data,target):
+        self.target = target
         out = self.ff(data)
         if out[1] != target:
             self.error_count += 1
@@ -560,7 +634,6 @@ if __name__ == '__main__':
     # set the conv_net
     conv_net = cnn([28,28],10)
 
-    #  conv_net.init_check()
 
     image = train_set[0][0]
     image = image.reshape([1,28,28])
