@@ -93,10 +93,10 @@ class conv_layer(layer):
         pool_width = shape_pooling[1]
 
         self.conv_w = self.init_weight(connect,shape_kernel)
-        self.conv_b = np.zeros(num_out_maps)
+        self.conv_b = np.zeros([num_out_maps,1])
         self.sub_w = np.ones(shape_pooling) / pool_height / pool_width
         # because the numpy's + is elementary wise
-        self.sub_b = np.zeros(num_out_maps)
+        self.sub_b = np.zeros([num_out_maps,1])
 
         conv_out_height = image_height - kernel_height + 1
         conv_out_width = image_width - kernel_width + 1
@@ -121,7 +121,7 @@ class conv_layer(layer):
                 (shape_image[2] - shape_kernel[2]) / stride + 1)
         out_feature = np.zeros(shape_out_feature)
         for index in range(0,out_dim1):
-            out_feature[index] += bias[index]
+            out_feature[index] += bias[index][0]
         for index in range(0,shape_kernel[0]):
             this_image = in_image[connect[0,index]]
             this_kernel = kernel[index]
@@ -166,21 +166,27 @@ class conv_layer(layer):
             this_kernel = kernel * weight[index]
             this_out = signal.convolve2d(this_image,this_kernel,mode = 'valid')
             out_feature[index] = copy_out(this_out,stride)
-            out_feature[index] += bias[index]
+            out_feature[index] += bias[index][0]
+            # FIXME use sigmoid?
             out_feature = self.sigmoid(out_feature)
             return out_feature
 
-    def ff(self,in_images):
+    def ff_conv(self,in_images):
         connect = self.connect
         conv_w = self.conv_w
         conv_b = self.conv_b
         self.conv_out = self.convolutional(in_images,connect,conv_w,conv_b)
 
+    def ff_sub(self,in_images):
         sub_w = self.sub_w
         sub_b = self.sub_b
         shape_pooling = self.shape_pooling
         stride = self.stride
         self.sub_out = self.pooling(self.conv_out,sub_w,sub_b,shape_pooling,stride)
+
+    def ff(self,in_images):
+        self.ff_conv(in_images)
+        self.ff_sub(in_images)
         return self.sub_out
 
     def gradient(self,inputs):
@@ -189,9 +195,9 @@ class conv_layer(layer):
         """
         # calculate the gradient of the bias
         num_b = self.shape_conv_out[0]
-        self.db = np.zeros(num_b)
+        self.db = np.zeros([num_b,1])
         for i in range(0,num_b):
-            self.db[i] += np.sum(self.d_conv[i])
+            self.db[i][0] += np.sum(self.d_conv[i])
 
         # calculate the gradient of the weight
         connect = self.connect
@@ -221,28 +227,34 @@ class out_layer(layer):
         #  layer.__init__("out")
 
         sd = 1.0 / np.sqrt(n_input)
-        self.w = -sd + 2 * sd * np.random.random_sample((n_input,n_output))
-        self.b = np.zeros(n_output)
+        self.w = -sd + 2 * sd * np.random.random_sample((n_output,n_input))
+        self.b = np.zeros([n_output,1])
         self.n_input = n_input
         self.n_output = n_output
 
     def ff(self,in_images):
         """
         in_images is 1D
-        w is 4096 * 10
+        w is 10 * 256
         """
+        inputs = in_images.reshape([self.n_input,1])
         w = self.w
         b = self.b
-        self.out = np.dot(in_images,w)
+        self.out = np.dot(w,inputs)
         self.out += b
         self.out = self.sigmoid(self.out)
         return self.out
 
     def gradient(self,inputs):
-        self.dw = np.zeros([self.n_input,self.n_output])
+        self.dw = np.zeros([self.n_output,self.n_input])
         # when the array has just one dimension it has no transpose,must to be (1,x)
-        self.dw = np.dot(self.d_out.reshape([self.n_output,1]),inputs.reshape([1,256]))
-        self.db = np.mean(self.d_out)
+        self.dw = np.dot(self.d_out.reshape([self.n_output,1]),inputs.reshape([1,self.n_input]))
+        # FIXME to delete
+        #  print("dw.shape")
+        #  print(self.dw.shape)
+        #  self.dw = np.dot(inputs.reshape([self.n_input,1]),self.d_out.reshape([1,self.n_output]))
+        # FIXME is it right
+        self.db = self.d_out
 
     def apply_gradient(self,alpha):
         self.w -= alpha * self.dw
@@ -250,7 +262,7 @@ class out_layer(layer):
 
 class cnn:
     def __init__(self,shape_image,num_tags):
-        self.alpha = 0.2
+        self.alpha = 0.02
 
         # set the layer
         self.layers = []
@@ -284,6 +296,7 @@ class cnn:
         for the out result
         """
         max = np.max(input)
+        # NOTE np.argmax return a number
         index = np.argmax(input)
         return [max,index]
 
@@ -292,9 +305,7 @@ class cnn:
         self.input = input
         layer1_out = self.layers[0].ff(input)
         layer2_out = self.layers[1].ff(layer1_out)
-
-        layer3_input = layer2_out.reshape(self.layers[2].n_input)
-        layer3_out = self.layers[2].ff(layer3_input)
+        layer3_out = self.layers[2].ff(layer2_out)
 
         self.out = self.max_with_index(layer3_out)
         return self.out
@@ -315,20 +326,167 @@ class cnn:
         if out[1] != target:
             self.error_count += 1
 
+        self.compute_error()
+
+        self.bp()
+        self.compute_gradient()
+        self.apply_gradient()
+
+    def check_gradient(self,image,target):
+        delta = 0.000001
+
+        #  print("check layer 2")
+        #  print("change w")
+
+        #  for i in range(3,5):
+            #  for j in range(5,6):
+                #  out0 = self.ff(image)
+                #  self.compute_error()
+                #  self.bp()
+                #  self.compute_gradient()
+
+                #  print("bp's result is %f" % self.layers[2].dw[i][j])
+                #  error_fun0 = self.error_fun
+
+                #  self.layers[2].w[i][j] += delta
+
+                #  out1 = self.ff(image)
+                #  self.compute_error()
+                #  error_fun1 = self.error_fun
+
+                #  delta_fun = error_fun1 - error_fun0
+                #  derive = delta_fun / delta
+                #  print("real result is %f" % derive)
+                #  print(" ")
+
+        #  print("change b")
+        #  for i in range(1,3):
+            #  out0 = self.ff(image)
+            #  self.compute_error()
+            #  self.bp()
+            #  self.compute_gradient()
+
+            #  print("bp's result is %f" % self.layers[2].db[i][0])
+            #  error_fun0 = self.error_fun
+
+            #  self.layers[2].b[i][0] += delta
+
+            #  out1 = self.ff(image)
+            #  self.compute_error()
+            #  error_fun1 = self.error_fun
+
+            #  delta_fun = error_fun1 - error_fun0
+            #  derive = delta_fun / delta
+            #  print("real result is %f" % derive)
+            #  print(" ")
+
+        # check_gradient layer0 layer[1]
+        for i in range(0,2):
+            print("check layer %d" % (1 - i))
+            #  self.check_gradient_w(1 - i,delta)
+            #  self.check_gradient_b(1 - i,delta)
+            self.check_gradient_s(1 - i,delta)
+
+
+    def check_gradient_w(self,layer,delta):
+        print("change w")
+
+        for i in range(1,3):
+            for j in range(1,2):
+                out0 = self.ff(image)
+                self.compute_error()
+                self.bp()
+                self.compute_gradient()
+
+                print("bp's result is %f" % self.layers[layer].dw[0][i][j])
+                error_fun0 = self.error_fun
+
+                self.layers[layer].conv_w[0][i][j] += delta
+
+                out1 = self.ff(image)
+                self.compute_error()
+                error_fun1 = self.error_fun
+
+                delta_fun = error_fun1 - error_fun0
+                derive = delta_fun / delta
+                print("real result is %f" % derive)
+                print(" ")
+
+    def check_gradient_b(self,layer,delta):
+        print("change b")
+        for i in range(1,3):
+            out0 = self.ff(image)
+            self.compute_error()
+            self.bp()
+            self.compute_gradient()
+
+            print("bp's result is %f" % self.layers[layer].db[i][0])
+            error_fun0 = self.error_fun
+
+            self.layers[layer].conv_b[i][0] += delta
+
+            out1 = self.ff(image)
+            self.compute_error()
+            error_fun1 = self.error_fun
+
+            delta_fun = error_fun1 - error_fun0
+            derive = delta_fun / delta
+            print("real result is %f" % derive)
+            print(" ")
+
+    def check_gradient_s(self,layer,delta):
+        """
+        check the gradient of the sensitive
+        """
+        print("change d_sub")
+        out = self.ff(image)
+
+        for i in range(1,3):
+            for j in range(1,2):
+                for k in range(layer + 1,3):
+                    inputs = self.layers[k - 1].sub_out
+                    out0 = self.layers[k].ff(inputs)
+                self.compute_error()
+                self.bp()
+                self.compute_gradient()
+
+                print("bp's result is %f" % self.layers[layer].d_sub[0][i][j])
+                error_fun0 = self.error_fun
+
+                self.layers[layer].sub_out[0][i][j] += delta
+
+                for k in range(layer + 1,3):
+                    inputs = self.layers[k - 1].sub_out
+                    out1 = self.layers[k].ff(inputs)
+                self.compute_error()
+                error_fun1 = self.error_fun
+
+                delta_fun = error_fun1 - error_fun0
+                derive = delta_fun / delta
+                print("real result is %f" % derive)
+                print(" ")
+
+
+
+    def compute_error(self):
         # compute the error of the net
         self.error = self.layers[2].out
-        self.error[target] -= 1
+        self.error[target][0] -= 1
         self.error_fun = 0
         for x in self.error:
             self.error_fun += x ** 2
+        self.error_fun /= 2
 
+
+    def bp(self):
         # compute the delta of the out layer
         self.layers[2].d_out = self.error * self.layers[2].out * (1 - self.layers[2].out)
         #  print(self.layers[2].d_out)
 
         # compute the delta of the second layer
         # compute the d_sub
-        self.layers[1].d_sub = np.dot(self.layers[2].w,self.layers[2].d_out)
+        #  print(self.layers[2].d_out.shape)
+        self.layers[1].d_sub = np.dot(self.layers[2].w.transpose(),self.layers[2].d_out)
         # because it has reshape the output of the sub layer,we must reshape it back
         shape_in = [self.num_out_maps2,self.layers[1].shape_sub_out[1],self.layers[1].shape_sub_out[2]]
         self.layers[1].d_sub = self.layers[1].d_sub.reshape(shape_in)
@@ -340,6 +498,7 @@ class cnn:
         for i in range(0,num_input_images):
             d_conv1[i] = np.kron(weight1,self.layers[1].d_sub[i]) * conv_out1[i] * (1 - conv_out1[i])
         self.layers[1].d_conv = d_conv1
+
 
         # compute the delta of the first layer
         # compute the d_sub
@@ -356,7 +515,6 @@ class cnn:
             # this is the true convolutional operation
             d_sub0[prev_index] += signal.convolve2d(this_d,this_kernel,mode = 'full')
         self.layers[0].d_sub = d_sub0
-
         # compute the d_conv
         num_input_images = self.layers[0].shape_conv_out[0]
         d_conv0 = np.zeros(self.layers[0].shape_conv_out)
@@ -364,15 +522,8 @@ class cnn:
         weight0 = self.layers[0].sub_w
         for i in range(0,num_input_images):
             d_conv0[i] = np.kron(weight0,self.layers[0].d_sub[i]) * conv_out0[i] * (1 - conv_out0[i])
-
         self.layers[0].d_conv = d_conv0
 
-        self.compute_gradient()
-        self.apply_gradient()
-
-    # TODO check the gradient
-    def check_gradient():
-        pass
 
     def init_check(self):
         for index in range(0,2):
@@ -394,25 +545,27 @@ class cnn:
             print(self.layers[index].dw.shape)
             print(self.layers[index].db)
 
+    def test(self,data,target):
+        out = self.ff(data)
+        if out[1] != target:
+            self.error_count += 1
+
 
 
 if __name__ == '__main__':
     train_set,valid_set,test_set = load_data('./mnist.pkl.gz')
-    conv_net = cnn([28,28],10)
     train_count =  train_set[0].shape[0]
+    test_count = test_set[0].shape[0]
 
-    test_example = train_set[1]
-
-    # check
-    image = train_set[0][0]
-    image = np.reshape(image,[28,28])
-    #  print(image)
-    data = image.reshape([1,28,28])
-    target = train_set[1][0]
-    conv_net.train(data,target)
-    conv_net.check()
+    # set the conv_net
+    conv_net = cnn([28,28],10)
 
     #  conv_net.init_check()
+
+    image = train_set[0][0]
+    image = image.reshape([1,28,28])
+    target = train_set[1][0]
+    conv_net.check_gradient(image,target)
 
 
     #  for epoch in range(0,10):
@@ -423,4 +576,15 @@ if __name__ == '__main__':
             #  data = image.reshape([1,28,28])
             #  target = train_set[1][i]
             #  conv_net.train(data,target)
+            #  if (i + 1) % 1000 == 0:
+                #  print("error_rate %f" % (conv_net.error_count / 1000.0))
+                #  conv_net.error_count = 0
+
+    #  for i in range(0,test_count):
+        #  conv_net.error_count = 0
+        #  image = test_set[0][i]
+        #  data = image.reshape([1,28,28])
+        #  target = test_set[1][i]
+        #  conv_net.test(data,target)
+    #  print("precision is %f" % (conv_net.error_count / floa(test_count)))
 
